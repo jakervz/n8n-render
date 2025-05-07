@@ -6,7 +6,7 @@ import type * as express from 'express';
 import type FormData from 'form-data';
 import type { PathLike } from 'fs';
 import type { IncomingHttpHeaders } from 'http';
-import type { RequestBodyMatcher } from 'nock';
+import type { ReplyHeaders, RequestBodyMatcher, RequestHeaderMatcher } from 'nock';
 import type { Client as SSHClient } from 'ssh2';
 import type { Readable } from 'stream';
 import type { SecureContextOptions } from 'tls';
@@ -14,7 +14,7 @@ import type { URLSearchParams } from 'url';
 
 import type { CODE_EXECUTION_MODES, CODE_LANGUAGES, LOG_LEVELS } from './Constants';
 import type { IDeferredPromise } from './DeferredPromise';
-import { ApplicationError, type ExecutionCancelledError } from './errors';
+import type { ExecutionCancelledError } from './errors';
 import type { ExpressionError } from './errors/expression.error';
 import type { NodeApiError } from './errors/node-api.error';
 import type { NodeOperationError } from './errors/node-operation.error';
@@ -398,7 +398,8 @@ export interface INodeTypeNameVersion {
 }
 
 export interface IRunNodeResponse {
-	data: INodeExecutionData[][] | NodeExecutionOutput | null | undefined;
+	data: INodeExecutionData[][] | null | undefined;
+	hints?: NodeExecutionHint[];
 	closeFunction?: CloseFunction;
 }
 
@@ -570,6 +571,8 @@ export interface IGetNodeParameterOptions {
 	extractValue?: boolean;
 	// get raw value of parameter with unresolved expressions
 	rawExpressions?: boolean;
+	// skip validation of parameter
+	skipValidation?: boolean;
 }
 
 namespace ExecuteFunctions {
@@ -689,6 +692,7 @@ export interface BinaryHelperFunctions {
 	binaryToString(body: Buffer | Readable, encoding?: BufferEncoding): Promise<string>;
 	getBinaryPath(binaryDataId: string): string;
 	getBinaryStream(binaryDataId: string, chunkSize?: number): Promise<Readable>;
+	createBinarySignedUrl(binaryData: IBinaryData, expiresIn?: string): string;
 	getBinaryMetadata(binaryDataId: string): Promise<{
 		fileName?: string;
 		mimeType?: string;
@@ -699,6 +703,16 @@ export interface BinaryHelperFunctions {
 export type DeduplicationScope = 'node' | 'workflow';
 export type DeduplicationItemTypes = string | number;
 export type DeduplicationMode = 'entries' | 'latestIncrementalKey' | 'latestDate';
+
+export interface IProcessedDataLatest {
+	mode: DeduplicationMode;
+	data: DeduplicationItemTypes;
+}
+
+export interface IProcessedDataEntries {
+	mode: DeduplicationMode;
+	data: DeduplicationItemTypes[];
+}
 
 export interface IDeduplicationOutput {
 	new: DeduplicationItemTypes[];
@@ -918,6 +932,8 @@ export type IExecuteFunctions = ExecuteFunctions.GetNodeParameterFn &
 			metadata?: ITaskMetadata,
 		): void;
 
+		addExecutionHints(...hints: NodeExecutionHint[]): void;
+
 		nodeHelpers: NodeHelperFunctions;
 		helpers: RequestHelperFunctions &
 			BaseHelperFunctions &
@@ -982,6 +998,10 @@ export type ISupplyDataFunctions = ExecuteFunctions.GetNodeParameterFn &
 		getExecutionCancelSignal(): AbortSignal | undefined;
 		onExecutionCancellation(handler: () => unknown): void;
 		logAiEvent(eventName: AiEvent, msg?: string | undefined): void;
+		cloneWith(replacements: {
+			runIndex: number;
+			inputData: INodeExecutionData[][];
+		}): ISupplyDataFunctions;
 	};
 
 export interface IExecutePaginationFunctions extends IExecuteSingleFunctions {
@@ -1125,6 +1145,7 @@ export interface INode {
 	credentials?: INodeCredentials;
 	webhookId?: string;
 	extendsCredential?: string;
+	rewireOutputLogTo?: NodeConnectionType;
 }
 
 export interface IPinData {
@@ -1235,7 +1256,7 @@ export type NodePropertyTypes =
 
 export type CodeAutocompleteTypes = 'function' | 'functionItem';
 
-export type EditorType = 'codeNodeEditor' | 'jsEditor' | 'htmlEditor' | 'sqlEditor';
+export type EditorType = 'codeNodeEditor' | 'jsEditor' | 'htmlEditor' | 'sqlEditor' | 'cssEditor';
 export type CodeNodeEditorLanguage = (typeof CODE_LANGUAGES)[number];
 export type CodeExecutionMode = (typeof CODE_EXECUTION_MODES)[number];
 export type SQLDialect =
@@ -1345,6 +1366,8 @@ export type FilterTypeOptions = {
 
 export type AssignmentTypeOptions = Partial<{
 	hideType?: boolean; // visible by default
+	defaultType?: FieldType | 'string';
+	disableType?: boolean; // visible by default
 }>;
 
 export type DisplayCondition =
@@ -1367,6 +1390,7 @@ export interface IDisplayOptions {
 	};
 	show?: {
 		'@version'?: Array<number | DisplayCondition>;
+		'@tool'?: boolean[];
 		[key: string]: Array<NodeParameterValue | DisplayCondition> | undefined;
 	};
 
@@ -1553,34 +1577,12 @@ export interface SupplyData {
 	closeFunction?: CloseFunction;
 }
 
-export class NodeExecutionOutput extends Array<INodeExecutionData[]> {
-	constructor(data: INodeExecutionData[][], hints: NodeExecutionHint[] = []) {
-		super();
-		// TODO: This is a temporary solution for NODE-1740, until we move away from extending native Array class
-		Object.defineProperty(data, 'getHints', {
-			value: () => hints,
-			enumerable: false,
-			writable: false,
-			configurable: false,
-		});
-		return data as NodeExecutionOutput;
-	}
-
-	static [Symbol.hasInstance](instance: unknown) {
-		return Array.isArray(instance) && 'getHints' in instance;
-	}
-
-	getHints(): NodeExecutionHint[] {
-		throw new ApplicationError('This should not have been called');
-	}
-}
+type NodeOutput = INodeExecutionData[][] | NodeExecutionWithMetadata[][] | null;
 
 export interface INodeType {
 	description: INodeTypeDescription;
 	supplyData?(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData>;
-	execute?(
-		this: IExecuteFunctions,
-	): Promise<INodeExecutionData[][] | NodeExecutionWithMetadata[][] | null>;
+	execute?(this: IExecuteFunctions): Promise<NodeOutput>;
 	poll?(this: IPollFunctions): Promise<INodeExecutionData[][] | null>;
 	trigger?(this: ITriggerFunctions): Promise<ITriggerResponse | undefined>;
 	webhook?(this: IWebhookFunctions): Promise<IWebhookResponseData>;
@@ -1615,6 +1617,18 @@ export interface INodeType {
 	webhookMethods?: {
 		[name in WebhookType]?: {
 			[method in WebhookSetupMethodNames]: (this: IHookFunctions) => Promise<boolean>;
+		};
+	};
+	/**
+	 * Defines custom operations for nodes that do not implement an `execute` method, such as declarative nodes.
+	 * This function will be invoked instead of `execute` for a specific resource and operation.
+	 * Should be either `execute` or `customOperations` defined for a node, but not both.
+	 *
+	 * @property customOperations - Maps specific resource and operation to a custom function
+	 */
+	customOperations?: {
+		[resource: string]: {
+			[operation: string]: (this: IExecuteFunctions) => Promise<NodeOutput>;
 		};
 	};
 }
@@ -1702,6 +1716,8 @@ export type IconRef = `fa:${string}` | `node:${string}.${string}`;
 export type IconFile = `file:${string}.png` | `file:${string}.svg`;
 export type Icon = IconRef | Themed<IconFile>;
 
+type NodeGroupType = 'input' | 'output' | 'organization' | 'schedule' | 'transform' | 'trigger';
+
 export interface INodeTypeBaseDescription {
 	displayName: string;
 	name: string;
@@ -1709,7 +1725,7 @@ export interface INodeTypeBaseDescription {
 	iconColor?: ThemeIconColor;
 	iconUrl?: Themed<string>;
 	badgeIconUrl?: Themed<string>;
-	group: string[];
+	group: NodeGroupType[];
 	description: string;
 	documentationUrl?: string;
 	subtitle?: string;
@@ -1724,10 +1740,22 @@ export interface INodeTypeBaseDescription {
 	hidden?: true;
 
 	/**
-	 * Whether the node will be wrapped for tool-use by AI Agents
+	 * Whether the node will be wrapped for tool-use by AI Agents,
+	 * optionally replacing provided parts of the description
 	 */
-	usableAsTool?: true;
+	usableAsTool?: true | UsableAsToolDescription;
 }
+
+/**
+ * NodeDescription entries that replace the base node entries when
+ * the node is used as a tool
+ *
+ * Note that the new codex is hardcoded and may not behave as expected
+ * without additional changes to the implementation.
+ */
+export type UsableAsToolDescription = {
+	replacements?: Partial<Omit<INodeTypeBaseDescription, 'usableAsTool'>>;
+};
 
 export interface INodePropertyRouting {
 	operations?: IN8nRequestOperations; // Should be changed, does not sound right
@@ -1827,36 +1855,38 @@ export interface IPostReceiveSort extends IPostReceiveBase {
 	};
 }
 
-export const enum NodeConnectionType {
-	AiAgent = 'ai_agent',
-	AiChain = 'ai_chain',
-	AiDocument = 'ai_document',
-	AiEmbedding = 'ai_embedding',
-	AiLanguageModel = 'ai_languageModel',
-	AiMemory = 'ai_memory',
-	AiOutputParser = 'ai_outputParser',
-	AiRetriever = 'ai_retriever',
-	AiTextSplitter = 'ai_textSplitter',
-	AiTool = 'ai_tool',
-	AiVectorStore = 'ai_vectorStore',
-	Main = 'main',
-}
+export const NodeConnectionTypes = {
+	AiAgent: 'ai_agent',
+	AiChain: 'ai_chain',
+	AiDocument: 'ai_document',
+	AiEmbedding: 'ai_embedding',
+	AiLanguageModel: 'ai_languageModel',
+	AiMemory: 'ai_memory',
+	AiOutputParser: 'ai_outputParser',
+	AiRetriever: 'ai_retriever',
+	AiTextSplitter: 'ai_textSplitter',
+	AiTool: 'ai_tool',
+	AiVectorStore: 'ai_vectorStore',
+	Main: 'main',
+} as const;
 
-export type AINodeConnectionType = Exclude<NodeConnectionType, NodeConnectionType.Main>;
+export type NodeConnectionType = (typeof NodeConnectionTypes)[keyof typeof NodeConnectionTypes];
+
+export type AINodeConnectionType = Exclude<NodeConnectionType, typeof NodeConnectionTypes.Main>;
 
 export const nodeConnectionTypes: NodeConnectionType[] = [
-	NodeConnectionType.AiAgent,
-	NodeConnectionType.AiChain,
-	NodeConnectionType.AiDocument,
-	NodeConnectionType.AiEmbedding,
-	NodeConnectionType.AiLanguageModel,
-	NodeConnectionType.AiMemory,
-	NodeConnectionType.AiOutputParser,
-	NodeConnectionType.AiRetriever,
-	NodeConnectionType.AiTextSplitter,
-	NodeConnectionType.AiTool,
-	NodeConnectionType.AiVectorStore,
-	NodeConnectionType.Main,
+	NodeConnectionTypes.AiAgent,
+	NodeConnectionTypes.AiChain,
+	NodeConnectionTypes.AiDocument,
+	NodeConnectionTypes.AiEmbedding,
+	NodeConnectionTypes.AiLanguageModel,
+	NodeConnectionTypes.AiMemory,
+	NodeConnectionTypes.AiOutputParser,
+	NodeConnectionTypes.AiRetriever,
+	NodeConnectionTypes.AiTextSplitter,
+	NodeConnectionTypes.AiTool,
+	NodeConnectionTypes.AiVectorStore,
+	NodeConnectionTypes.Main,
 ];
 
 export interface INodeInputFilter {
@@ -1972,7 +2002,7 @@ export interface IWebhookDescription {
 	responseMode?: WebhookResponseMode | string;
 	responseData?: WebhookResponseData | string;
 	restartWebhook?: boolean;
-	isForm?: boolean;
+	nodeType?: 'webhook' | 'form' | 'mcp';
 	ndvHideUrl?: string | boolean; // If true the webhook will not be displayed in the editor
 	ndvHideMethod?: string | boolean; // If true the method will not be displayed in the editor
 }
@@ -2075,6 +2105,11 @@ export type KnownNodesAndCredentials = {
 	credentials: Record<string, CredentialLoadingDetails>;
 };
 
+export interface LoadedNodesAndCredentials {
+	nodes: INodeTypeData;
+	credentials: ICredentialTypeData;
+}
+
 export interface LoadedClass<T> {
 	sourcePath: string;
 	type: T;
@@ -2159,16 +2194,22 @@ export interface ITaskMetadata {
 	subExecutionsCount?: number;
 }
 
-// The data that gets returned when a node runs
-export interface ITaskData {
+/** The data that gets returned when a node execution starts */
+export interface ITaskStartedData {
 	startTime: number;
+	/** This index tracks the order in which nodes are executed */
+	executionIndex: number;
+	source: Array<ISourceData | null>; // Is an array as nodes have multiple inputs
+	hints?: NodeExecutionHint[];
+}
+
+/** The data that gets returned when a node execution ends */
+export interface ITaskData extends ITaskStartedData {
 	executionTime: number;
 	executionStatus?: ExecutionStatus;
 	data?: ITaskDataConnections;
 	inputOverride?: ITaskDataConnections;
 	error?: ExecutionError;
-	hints?: NodeExecutionHint[];
-	source: Array<ISourceData | null>; // Is an array as nodes have multiple inputs
 	metadata?: ITaskMetadata;
 }
 
@@ -2215,10 +2256,13 @@ export interface IWaitingForExecutionSource {
 	};
 }
 
+export type WorkflowId = IWorkflowBase['id'];
+
 export interface IWorkflowBase {
 	id: string;
 	name: string;
 	active: boolean;
+	isArchived: boolean;
 	createdAt: Date;
 	startedAt?: Date;
 	updatedAt: Date;
@@ -2313,6 +2357,7 @@ export interface IWorkflowExecuteAdditionalData {
 	) => Promise<ExecuteWorkflowData>;
 	executionId?: string;
 	restartExecutionId?: string;
+	currentNodeExecutionIndex: number;
 	httpResponse?: express.Response;
 	httpRequest?: express.Request;
 	restApiUrl: string;
@@ -2385,6 +2430,7 @@ export interface IWorkflowSettings {
 	saveExecutionProgress?: 'DEFAULT' | boolean;
 	executionTimeout?: number;
 	executionOrder?: 'v0' | 'v1';
+	timeSavedPerExecution?: number;
 }
 
 export interface WorkflowFEMeta {
@@ -2401,11 +2447,14 @@ export interface WorkflowTestData {
 		};
 	};
 	output: {
+		assertBinaryData?: boolean;
 		nodeExecutionOrder?: string[];
+		nodeExecutionStack?: IExecuteData[];
 		testAllOutputs?: boolean;
 		nodeData: {
 			[key: string]: any[][];
 		};
+		error?: string;
 	};
 	nock?: {
 		baseUrl: string;
@@ -2413,14 +2462,17 @@ export interface WorkflowTestData {
 			method: 'delete' | 'get' | 'patch' | 'post' | 'put';
 			path: string;
 			requestBody?: RequestBodyMatcher;
+			requestHeaders?: Record<string, RequestHeaderMatcher>;
 			statusCode: number;
 			responseBody: string | object;
+			responseHeaders?: ReplyHeaders;
 		}>;
 	};
 	trigger?: {
 		mode: WorkflowExecuteMode;
 		input: INodeExecutionData;
 	};
+	credentials?: Record<string, ICredentialDataDecryptedObject>;
 }
 
 export type LogLevel = (typeof LOG_LEVELS)[number];
@@ -2621,7 +2673,7 @@ export interface ResourceMapperFields {
 export interface WorkflowInputsData {
 	fields: ResourceMapperField[];
 	dataMode: string;
-	subworkflowInfo?: { id?: string };
+	subworkflowInfo?: { workflowId?: string; triggerId?: string };
 }
 
 export interface ResourceMapperField {

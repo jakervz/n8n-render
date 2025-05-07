@@ -1,3 +1,5 @@
+import type { Project } from '@n8n/db';
+import { ExecutionRepository } from '@n8n/db';
 import { stringify } from 'flatted';
 import { mock } from 'jest-mock-extended';
 import {
@@ -6,6 +8,7 @@ import {
 	InstanceSettings,
 	Logger,
 	ExecutionLifecycleHooks,
+	BinaryDataConfig,
 } from 'n8n-core';
 import { ExpressionError } from 'n8n-workflow';
 import type {
@@ -17,11 +20,9 @@ import type {
 	INode,
 	IWorkflowBase,
 	WorkflowExecuteMode,
+	ITaskStartedData,
 } from 'n8n-workflow';
 
-import config from '@/config';
-import type { Project } from '@/databases/entities/project';
-import { ExecutionRepository } from '@/databases/repositories/execution.repository';
 import { EventService } from '@/events/event.service';
 import { ExternalHooks } from '@/external-hooks';
 import { Push } from '@/push';
@@ -60,6 +61,7 @@ describe('Execution Lifecycle Hooks', () => {
 		id: workflowId,
 		name: 'Test Workflow',
 		active: true,
+		isArchived: false,
 		connections: {},
 		nodes: [],
 		settings: {},
@@ -68,6 +70,7 @@ describe('Execution Lifecycle Hooks', () => {
 	};
 	const workflow = mock<Workflow>();
 	const staticData = mock<IDataObject>();
+	const taskStartedData = mock<ITaskStartedData>();
 	const taskData = mock<ITaskData>();
 	const runExecutionData = mock<IRunExecutionData>();
 	const successfulRun = mock<IRun>({
@@ -88,6 +91,7 @@ describe('Execution Lifecycle Hooks', () => {
 	const expressionError = new ExpressionError('Error');
 	const pushRef = 'test-push-ref';
 	const retryOf = 'test-retry-of';
+	const userId = 'test-user-id';
 
 	const now = new Date('2025-01-13T18:25:50.267Z');
 	jest.useFakeTimers({ now });
@@ -110,7 +114,7 @@ describe('Execution Lifecycle Hooks', () => {
 		};
 	});
 
-	const workflowEventTests = () => {
+	const workflowEventTests = (expectedUserId?: string) => {
 		describe('workflowExecuteBefore', () => {
 			it('should emit workflow-pre-execute events', async () => {
 				await lifecycleHooks.runHook('workflowExecuteBefore', [workflow, runExecutionData]);
@@ -130,6 +134,7 @@ describe('Execution Lifecycle Hooks', () => {
 					executionId,
 					runData: successfulRun,
 					workflow: workflowData,
+					userId: expectedUserId,
 				});
 			});
 
@@ -144,7 +149,7 @@ describe('Execution Lifecycle Hooks', () => {
 	const nodeEventsTests = () => {
 		describe('nodeExecuteBefore', () => {
 			it('should emit node-pre-execute event', async () => {
-				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName]);
+				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName, taskStartedData]);
 
 				expect(eventService.emit).toHaveBeenCalledWith('node-pre-execute', {
 					executionId,
@@ -214,7 +219,7 @@ describe('Execution Lifecycle Hooks', () => {
 	describe('getLifecycleHooksForRegularMain', () => {
 		const createHooks = (executionMode: WorkflowExecuteMode = 'manual') =>
 			getLifecycleHooksForRegularMain(
-				{ executionMode, workflowData, pushRef, retryOf },
+				{ executionMode, workflowData, pushRef, retryOf, userId },
 				executionId,
 			);
 
@@ -222,7 +227,7 @@ describe('Execution Lifecycle Hooks', () => {
 			lifecycleHooks = createHooks();
 		});
 
-		workflowEventTests();
+		workflowEventTests(userId);
 		nodeEventsTests();
 		externalHooksTests();
 		statisticsTests();
@@ -244,10 +249,10 @@ describe('Execution Lifecycle Hooks', () => {
 
 		describe('nodeExecuteBefore', () => {
 			it('should send nodeExecuteBefore push event', async () => {
-				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName]);
+				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName, taskStartedData]);
 
 				expect(push.send).toHaveBeenCalledWith(
-					{ type: 'nodeExecuteBefore', data: { executionId, nodeName } },
+					{ type: 'nodeExecuteBefore', data: { executionId, nodeName, data: taskStartedData } },
 					pushRef,
 				);
 			});
@@ -463,14 +468,15 @@ describe('Execution Lifecycle Hooks', () => {
 			});
 
 			it('should restore binary data IDs after workflow execution for webhooks', async () => {
-				config.set('binaryDataManager.mode', 'filesystem');
+				mockInstance(BinaryDataConfig, { mode: 'filesystem' });
 				lifecycleHooks = createHooks('webhook');
 
 				(successfulRun.data.resultData.runData = {
 					[nodeName]: [
 						{
-							executionTime: 1,
 							startTime: 1,
+							executionIndex: 0,
+							executionTime: 1,
 							source: [],
 							data: {
 								main: [
@@ -515,7 +521,7 @@ describe('Execution Lifecycle Hooks', () => {
 				expect(handlers.workflowExecuteBefore).toHaveLength(2);
 				expect(handlers.workflowExecuteAfter).toHaveLength(4);
 
-				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName]);
+				await lifecycleHooks.runHook('nodeExecuteBefore', [nodeName, taskStartedData]);
 				await lifecycleHooks.runHook('nodeExecuteAfter', [nodeName, taskData, runExecutionData]);
 				await lifecycleHooks.runHook('workflowExecuteBefore', [workflow, runExecutionData]);
 				await lifecycleHooks.runHook('workflowExecuteAfter', [successfulRun, {}]);
@@ -527,13 +533,19 @@ describe('Execution Lifecycle Hooks', () => {
 
 	describe('getLifecycleHooksForScalingMain', () => {
 		beforeEach(() => {
-			lifecycleHooks = getLifecycleHooksForScalingMain('manual', executionId, workflowData, {
-				pushRef,
-				retryOf,
-			});
+			lifecycleHooks = getLifecycleHooksForScalingMain(
+				{
+					executionMode: 'manual',
+					workflowData,
+					pushRef,
+					retryOf,
+					userId,
+				},
+				executionId,
+			);
 		});
 
-		workflowEventTests();
+		workflowEventTests(userId);
 		externalHooksTests();
 
 		it('should setup the correct set of hooks', () => {
@@ -566,13 +578,13 @@ describe('Execution Lifecycle Hooks', () => {
 					saveDataErrorExecution: 'all',
 				};
 				const lifecycleHooks = getLifecycleHooksForScalingMain(
-					'webhook',
-					executionId,
-					workflowData,
 					{
+						executionMode: 'webhook',
+						workflowData,
 						pushRef,
 						retryOf,
 					},
+					executionId,
 				);
 
 				await lifecycleHooks.runHook('workflowExecuteAfter', [successfulRun, {}]);
@@ -589,13 +601,13 @@ describe('Execution Lifecycle Hooks', () => {
 					saveDataErrorExecution: 'none',
 				};
 				const lifecycleHooks = getLifecycleHooksForScalingMain(
-					'webhook',
-					executionId,
-					workflowData,
 					{
+						executionMode: 'webhook',
+						workflowData,
 						pushRef,
 						retryOf,
 					},
+					executionId,
 				);
 
 				await lifecycleHooks.runHook('workflowExecuteAfter', [failedRun, {}]);
@@ -610,10 +622,10 @@ describe('Execution Lifecycle Hooks', () => {
 
 	describe('getLifecycleHooksForScalingWorker', () => {
 		const createHooks = (executionMode: WorkflowExecuteMode = 'manual') =>
-			getLifecycleHooksForScalingWorker(executionMode, executionId, workflowData, {
-				pushRef,
-				retryOf,
-			});
+			getLifecycleHooksForScalingWorker(
+				{ executionMode, workflowData, pushRef, retryOf },
+				executionId,
+			);
 
 		beforeEach(() => {
 			lifecycleHooks = createHooks();

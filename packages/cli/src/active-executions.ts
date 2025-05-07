@@ -1,3 +1,5 @@
+import type { CreateExecutionPayload, IExecutionDb } from '@n8n/db';
+import { ExecutionRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
 import { Logger } from 'n8n-core';
 import type {
@@ -11,14 +13,8 @@ import { createDeferredPromise, ExecutionCancelledError, sleep } from 'n8n-workf
 import { strict as assert } from 'node:assert';
 import type PCancelable from 'p-cancelable';
 
-import { ExecutionRepository } from '@/databases/repositories/execution.repository';
 import { ExecutionNotFoundError } from '@/errors/execution-not-found-error';
-import type {
-	CreateExecutionPayload,
-	IExecutingWorkflowData,
-	IExecutionDb,
-	IExecutionsCurrentSummary,
-} from '@/interfaces';
+import type { IExecutingWorkflowData, IExecutionsCurrentSummary } from '@/interfaces';
 import { isWorkflowIdValid } from '@/utils';
 
 import { ConcurrencyControlService } from './concurrency/concurrency-control.service';
@@ -172,6 +168,22 @@ export class ActiveExecutions {
 		const execution = this.getExecutionOrFail(executionId);
 		execution.postExecutePromise.resolve(fullRunData);
 		this.logger.debug('Execution finalized', { executionId });
+	}
+
+	/** Resolve the response promise in an execution. */
+	resolveExecutionResponsePromise(executionId: string) {
+		// TODO: This should probably be refactored.
+		// The reason for adding this method is that the Form node works in 'responseNode' mode
+		// and expects the next Form to 'sendResponse' to redirect to the current Form node.
+		// Resolving responsePromise here is needed to complete the redirection chain; otherwise, a manual reload will be required.
+
+		if (!this.has(executionId)) return;
+		const execution = this.getExecutionOrFail(executionId);
+
+		if (execution.status !== 'waiting' && execution?.responsePromise) {
+			execution.responsePromise.resolve({});
+			this.logger.debug('Execution response promise cleaned', { executionId });
+		}
 	}
 
 	/**

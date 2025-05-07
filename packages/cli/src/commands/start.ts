@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+import { LICENSE_FEATURES } from '@n8n/constants';
+import { ExecutionRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { Flags } from '@oclif/core';
 import glob from 'fast-glob';
@@ -13,8 +15,7 @@ import { pipeline } from 'stream/promises';
 import { ActiveExecutions } from '@/active-executions';
 import { ActiveWorkflowManager } from '@/active-workflow-manager';
 import config from '@/config';
-import { EDITOR_UI_DIST_DIR, LICENSE_FEATURES } from '@/constants';
-import { ExecutionRepository } from '@/databases/repositories/execution.repository';
+import { EDITOR_UI_DIST_DIR } from '@/constants';
 import { SettingsRepository } from '@/databases/repositories/settings.repository';
 import { FeatureNotLicensedError } from '@/errors/feature-not-licensed.error';
 import { MessageEventBus } from '@/eventbus/message-event-bus/message-event-bus';
@@ -67,11 +68,15 @@ export class Start extends BaseCommand {
 
 	override needsCommunityPackages = true;
 
+	override needsTaskRunner = true;
+
+	private getEditorUrl = () => Container.get(UrlService).getInstanceBaseUrl();
+
 	/**
 	 * Opens the UI in browser
 	 */
 	private openBrowser() {
-		const editorUrl = Container.get(UrlService).baseUrl;
+		const editorUrl = this.getEditorUrl();
 
 		open(editorUrl, { wait: true }).catch(() => {
 			this.logger.info(
@@ -222,16 +227,16 @@ export class Start extends BaseCommand {
 		this.initWorkflowHistory();
 		this.logger.debug('Workflow history init complete');
 
+		if (!isMultiMainEnabled) {
+			await this.cleanupTestRunner();
+			this.logger.debug('Test runner cleanup complete');
+		}
+
 		if (!this.globalConfig.endpoints.disableUi) {
 			await this.generateStaticAssets();
 		}
 
-		const { taskRunners: taskRunnerConfig } = this.globalConfig;
-		if (taskRunnerConfig.enabled) {
-			const { TaskRunnerModule } = await import('@/task-runners/task-runner-module');
-			const taskRunnerModule = Container.get(TaskRunnerModule);
-			await taskRunnerModule.start();
-		}
+		await this.loadModules();
 	}
 
 	async initOrchestration() {
@@ -251,18 +256,6 @@ export class Start extends BaseCommand {
 		await subscriber.subscribe('n8n.worker-response');
 
 		this.logger.scoped(['scaling', 'pubsub']).debug('Pubsub setup completed');
-
-		if (this.instanceSettings.isSingleMain) return;
-
-		orchestrationService.multiMainSetup
-			.on('leader-stepdown', async () => {
-				await this.license.reinit(); // to disable renewal
-				await this.activeWorkflowManager.removeAllTriggerAndPollerBasedWorkflows();
-			})
-			.on('leader-takeover', async () => {
-				await this.license.reinit(); // to enable renewal
-				await this.activeWorkflowManager.addAllTriggerAndPollerBasedWorkflows();
-			});
 	}
 
 	async run() {
@@ -323,7 +316,8 @@ export class Start extends BaseCommand {
 		// Start to get active workflows and run their triggers
 		await this.activeWorkflowManager.init();
 
-		const editorUrl = Container.get(UrlService).baseUrl;
+		const editorUrl = this.getEditorUrl();
+
 		this.log(`\nEditor is now accessible via:\n${editorUrl}`);
 
 		// Allow to open n8n editor by pressing "o"

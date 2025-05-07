@@ -1,23 +1,23 @@
 import { GlobalConfig } from '@n8n/config';
+import { LICENSE_FEATURES } from '@n8n/constants';
+import type { InstalledPackages } from '@n8n/db';
+import { InstalledPackagesRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
 import axios from 'axios';
 import { exec } from 'child_process';
-import { access as fsAccess, mkdir as fsMkdir } from 'fs/promises';
+import { mkdir as fsMkdir } from 'fs/promises';
 import type { PackageDirectoryLoader } from 'n8n-core';
 import { InstanceSettings, Logger } from 'n8n-core';
-import { ApplicationError, type PublicInstalledPackage } from 'n8n-workflow';
+import { UnexpectedError, UserError, type PublicInstalledPackage } from 'n8n-workflow';
 import { promisify } from 'util';
 
 import {
-	LICENSE_FEATURES,
 	NODE_PACKAGE_PREFIX,
 	NPM_COMMAND_TOKENS,
 	NPM_PACKAGE_STATUS_GOOD,
 	RESPONSE_ERROR_MESSAGES,
 	UNKNOWN_FAILURE_REASON,
 } from '@/constants';
-import type { InstalledPackages } from '@/databases/entities/installed-packages';
-import { InstalledPackagesRepository } from '@/databases/repositories/installed-packages.repository';
 import { FeatureNotLicensedError } from '@/errors/feature-not-licensed.error';
 import type { CommunityPackages } from '@/interfaces';
 import { License } from '@/license';
@@ -26,6 +26,14 @@ import { Publisher } from '@/scaling/pubsub/publisher.service';
 import { toError } from '@/utils';
 
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
+const NPM_COMMON_ARGS = ['--audit=false', '--fund=false'];
+const NPM_INSTALL_ARGS = [
+	'--bin-links=false',
+	'--install-strategy=shallow',
+	'--omit=dev',
+	'--omit=optional',
+	'--omit=peer',
+];
 
 const {
 	PACKAGE_NAME_NOT_PROVIDED,
@@ -102,10 +110,10 @@ export class CommunityPackagesService {
 	}
 
 	parseNpmPackageName(rawString?: string): CommunityPackages.ParsedPackageName {
-		if (!rawString) throw new ApplicationError(PACKAGE_NAME_NOT_PROVIDED);
+		if (!rawString) throw new UnexpectedError(PACKAGE_NAME_NOT_PROVIDED);
 
 		if (INVALID_OR_SUSPICIOUS_PACKAGE_NAME.test(rawString)) {
-			throw new ApplicationError('Package name must be a single word');
+			throw new UnexpectedError('Package name must be a single word');
 		}
 
 		const scope = rawString.includes('/') ? rawString.split('/')[0] : undefined;
@@ -113,7 +121,7 @@ export class CommunityPackagesService {
 		const packageNameWithoutScope = scope ? rawString.replace(`${scope}/`, '') : rawString;
 
 		if (!packageNameWithoutScope.startsWith(NODE_PACKAGE_PREFIX)) {
-			throw new ApplicationError(`Package name must start with ${NODE_PACKAGE_PREFIX}`);
+			throw new UnexpectedError(`Package name must start with ${NODE_PACKAGE_PREFIX}`);
 		}
 
 		const version = packageNameWithoutScope.includes('@')
@@ -134,17 +142,11 @@ export class CommunityPackagesService {
 				NODE_PATH: process.env.NODE_PATH,
 				PATH: process.env.PATH,
 				APPDATA: process.env.APPDATA,
+				NODE_ENV: 'production',
 			},
 		};
 
-		try {
-			await fsAccess(downloadFolder);
-		} catch {
-			await fsMkdir(downloadFolder);
-			// Also init the folder since some versions
-			// of npm complain if the folder is empty
-			await asyncExec('npm init -y', execOptions);
-		}
+		await fsMkdir(downloadFolder, { recursive: true });
 
 		try {
 			const commandResult = await asyncExec(command, execOptions);
@@ -164,12 +166,12 @@ export class CommunityPackagesService {
 			};
 
 			Object.entries(map).forEach(([npmMessage, n8nMessage]) => {
-				if (errorMessage.includes(npmMessage)) throw new ApplicationError(n8nMessage);
+				if (errorMessage.includes(npmMessage)) throw new UnexpectedError(n8nMessage);
 			});
 
 			this.logger.warn('npm command failed', { errorMessage });
 
-			throw new ApplicationError(PACKAGE_FAILED_TO_INSTALL);
+			throw new UnexpectedError(PACKAGE_FAILED_TO_INSTALL);
 		}
 	}
 
@@ -326,12 +328,12 @@ export class CommunityPackagesService {
 		});
 	}
 
-	private getNpmRegistry() {
+	private getNpmInstallArgs() {
 		const { registry } = this.globalConfig.nodes.communityPackages;
 		if (registry !== DEFAULT_REGISTRY && !this.license.isCustomNpmRegistryEnabled()) {
 			throw new FeatureNotLicensedError(LICENSE_FEATURES.COMMUNITY_NODES_CUSTOM_REGISTRY);
 		}
-		return registry;
+		return [...NPM_COMMON_ARGS, ...NPM_INSTALL_ARGS, `--registry=${registry}`].join(' ');
 	}
 
 	private async installOrUpdatePackage(
@@ -340,13 +342,13 @@ export class CommunityPackagesService {
 	) {
 		const isUpdate = 'installedPackage' in options;
 		const packageVersion = isUpdate || !options.version ? 'latest' : options.version;
-		const command = `npm install ${packageName}@${packageVersion} --registry=${this.getNpmRegistry()}`;
+		const command = `npm install ${packageName}@${packageVersion} ${this.getNpmInstallArgs()}`;
 
 		try {
 			await this.executeNpmCommand(command);
 		} catch (error) {
 			if (error instanceof Error && error.message === RESPONSE_ERROR_MESSAGES.PACKAGE_NOT_FOUND) {
-				throw new ApplicationError('npm package not found', { extra: { packageName } });
+				throw new UserError('npm package not found', { extra: { packageName } });
 			}
 			throw error;
 		}
@@ -360,7 +362,7 @@ export class CommunityPackagesService {
 			try {
 				await this.executeNpmCommand(`npm remove ${packageName}`);
 			} catch {}
-			throw new ApplicationError(RESPONSE_ERROR_MESSAGES.PACKAGE_LOADING_FAILED, { cause: error });
+			throw new UnexpectedError(RESPONSE_ERROR_MESSAGES.PACKAGE_LOADING_FAILED, { cause: error });
 		}
 
 		if (loader.loadedNodes.length > 0) {
@@ -378,7 +380,7 @@ export class CommunityPackagesService {
 				this.logger.info(`Community package installed: ${packageName}`);
 				return installedPackage;
 			} catch (error) {
-				throw new ApplicationError('Failed to save installed package', {
+				throw new UnexpectedError('Failed to save installed package', {
 					extra: { packageName },
 					cause: error,
 				});
@@ -388,13 +390,13 @@ export class CommunityPackagesService {
 			try {
 				await this.executeNpmCommand(`npm remove ${packageName}`);
 			} catch {}
-			throw new ApplicationError(RESPONSE_ERROR_MESSAGES.PACKAGE_DOES_NOT_CONTAIN_NODES);
+			throw new UnexpectedError(RESPONSE_ERROR_MESSAGES.PACKAGE_DOES_NOT_CONTAIN_NODES);
 		}
 	}
 
 	async installOrUpdateNpmPackage(packageName: string, packageVersion: string) {
 		await this.executeNpmCommand(
-			`npm install ${packageName}@${packageVersion} --registry=${this.getNpmRegistry()}`,
+			`npm install ${packageName}@${packageVersion} ${this.getNpmInstallArgs()}`,
 		);
 		await this.loadNodesAndCredentials.loadPackage(packageName);
 		await this.loadNodesAndCredentials.postProcessLoaders();
