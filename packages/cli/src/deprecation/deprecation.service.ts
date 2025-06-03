@@ -1,6 +1,6 @@
+import { Logger } from '@n8n/backend-common';
 import { GlobalConfig } from '@n8n/config';
 import { Service } from '@n8n/di';
-import { Logger } from 'n8n-core';
 
 import config from '@/config';
 
@@ -75,6 +75,14 @@ export class DeprecationService {
 		{
 			envVar: 'N8N_PARTIAL_EXECUTION_VERSION_DEFAULT',
 			message: 'This environment variable is internal and should not be set.',
+		},
+		{
+			envVar: 'N8N_EXPRESSION_EVALUATOR',
+			message: `n8n has replaced \`tmpl\` with \`tournament\` as expression evaluator. ${SAFE_TO_REMOVE}`,
+		},
+		{
+			envVar: 'N8N_EXPRESSION_REPORT_DIFFERENCE',
+			message: `n8n has replaced \`tmpl\` with \`tournament\` as expression evaluator. ${SAFE_TO_REMOVE}`,
 		},
 		{
 			envVar: 'EXECUTIONS_PROCESS',

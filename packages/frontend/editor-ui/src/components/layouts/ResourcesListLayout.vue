@@ -7,12 +7,12 @@ import PageViewLayoutList from '@/components/layouts/PageViewLayoutList.vue';
 import ResourceFiltersDropdown from '@/components/forms/ResourceFiltersDropdown.vue';
 import { useUsersStore } from '@/stores/users.store';
 import type { DatatableColumn } from '@n8n/design-system';
-import { useI18n } from '@/composables/useI18n';
+import { useI18n } from '@n8n/i18n';
 import { useDebounce } from '@/composables/useDebounce';
 import { useTelemetry } from '@/composables/useTelemetry';
 import { useRoute, useRouter } from 'vue-router';
 
-import type { BaseTextKey } from '@/plugins/i18n';
+import type { BaseTextKey } from '@n8n/i18n';
 import type { Scope } from '@n8n/permissions';
 import type { BaseFolderItem, BaseResource, ITag, ResourceParentFolder } from '@/Interface';
 import { isSharedResource, isResourceSortableByDate } from '@/utils/typeGuards';
@@ -297,14 +297,11 @@ watch(
 	},
 );
 
-watch(
-	() => route?.params?.projectId,
-	async () => {
-		await resetFilters();
-		await loadPaginationPreferences();
-		await props.initialize();
-	},
-);
+watch([() => route.params?.projectId, () => route.name], async () => {
+	await resetFilters();
+	await loadPaginationPreferences();
+	await props.initialize();
+});
 
 // Lifecycle hooks
 onMounted(async () => {
@@ -337,20 +334,32 @@ const focusSearchInput = () => {
 	}
 };
 
-const hasAppliedFilters = (): boolean => {
-	return !!filterKeys.value.find((key) => {
-		if (key === 'search') return false;
+const isFilterApplied = (key: string): boolean => {
+	if (key === 'search') return false;
 
-		if (typeof props.filters[key] === 'boolean') {
-			return props.filters[key];
-		}
+	if (typeof props.filters[key] === 'boolean') {
+		return props.filters[key];
+	}
 
-		if (Array.isArray(props.filters[key])) {
-			return props.filters[key].length > 0;
-		}
+	if (Array.isArray(props.filters[key])) {
+		return props.filters[key].length > 0;
+	}
 
-		return props.filters[key] !== '';
+	return props.filters[key] !== '';
+};
+
+const hasOnlyFiltersThatShowMoreResults = computed(() => {
+	const activeFilters = filterKeys.value.filter(isFilterApplied);
+
+	const filtersThatShowMoreResults = ['showArchived'];
+
+	return activeFilters.every((filter) => {
+		return filtersThatShowMoreResults.includes(filter);
 	});
+});
+
+const hasAppliedFilters = (): boolean => {
+	return !!filterKeys.value.find(isFilterApplied);
 };
 
 const setRowsPerPage = async (numberOfRowsPerPage: number) => {
@@ -670,9 +679,18 @@ defineExpose({
 
 					<slot name="callout"></slot>
 
-					<div v-if="showFiltersDropdown" v-show="hasFilters" class="mt-xs">
+					<div
+						v-if="showFiltersDropdown"
+						v-show="hasFilters"
+						class="mt-xs"
+						data-test-id="resources-list-filters-applied-info"
+					>
 						<n8n-info-tip :bold="false">
-							{{ i18n.baseText(`${resourceKey}.filters.active` as BaseTextKey) }}
+							{{
+								hasOnlyFiltersThatShowMoreResults
+									? i18n.baseText(`${resourceKey}.filters.active.shortText` as BaseTextKey)
+									: i18n.baseText(`${resourceKey}.filters.active` as BaseTextKey)
+							}}
 							<n8n-link data-test-id="workflows-filter-reset" size="small" @click="resetFilters">
 								{{ i18n.baseText(`${resourceKey}.filters.active.reset` as BaseTextKey) }}
 							</n8n-link>

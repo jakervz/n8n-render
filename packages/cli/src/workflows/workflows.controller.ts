@@ -3,6 +3,7 @@ import {
 	ManualRunQueryDto,
 	TransferWorkflowBodyDto,
 } from '@n8n/api-types';
+import { Logger } from '@n8n/backend-common';
 import { GlobalConfig } from '@n8n/config';
 import type { Project } from '@n8n/db';
 import {
@@ -10,6 +11,9 @@ import {
 	WorkflowEntity,
 	ProjectRelationRepository,
 	ProjectRepository,
+	TagRepository,
+	SharedWorkflowRepository,
+	WorkflowRepository,
 } from '@n8n/db';
 import {
 	Body,
@@ -28,14 +32,9 @@ import {
 import { In, type FindOptionsRelations } from '@n8n/typeorm';
 import axios from 'axios';
 import express from 'express';
-import { Logger } from 'n8n-core';
 import { UnexpectedError } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
 
-import { SharedWorkflowRepository } from '@/databases/repositories/shared-workflow.repository';
-import { TagRepository } from '@/databases/repositories/tag.repository';
-import { WorkflowRepository } from '@/databases/repositories/workflow.repository';
-import * as Db from '@/db';
 import { BadRequestError } from '@/errors/response-errors/bad-request.error';
 import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
 import { InternalServerError } from '@/errors/response-errors/internal-server.error';
@@ -135,8 +134,10 @@ export class WorkflowsController {
 			}
 		}
 
+		const { manager: dbManager } = this.projectRepository;
+
 		let project: Project | null;
-		const savedWorkflow = await Db.transaction(async (transactionManager) => {
+		const savedWorkflow = await dbManager.transaction(async (transactionManager) => {
 			const workflow = await transactionManager.save<WorkflowEntity>(newWorkflow);
 
 			const { projectId, parentFolderId } = req.body;
@@ -329,7 +330,7 @@ export class WorkflowsController {
 			workflowId,
 			req.user,
 			['workflow:read'],
-			{ includeTags: !this.globalConfig.tags.disabled },
+			{ includeTags: !this.globalConfig.tags.disabled, includeParentFolder: true },
 		);
 
 		if (!workflow) {
@@ -496,7 +497,8 @@ export class WorkflowsController {
 		}
 
 		let newShareeIds: string[] = [];
-		await Db.transaction(async (trx) => {
+		const { manager: dbManager } = this.projectRepository;
+		await dbManager.transaction(async (trx) => {
 			const currentPersonalProjectIDs = workflow.shared
 				.filter((sw) => sw.role === 'workflow:editor')
 				.map((sw) => sw.projectId);
@@ -548,7 +550,7 @@ export class WorkflowsController {
 		@Param('workflowId') workflowId: string,
 		@Body body: TransferWorkflowBodyDto,
 	) {
-		return await this.enterpriseWorkflowService.transferOne(
+		return await this.enterpriseWorkflowService.transferWorkflow(
 			req.user,
 			workflowId,
 			body.destinationProjectId,

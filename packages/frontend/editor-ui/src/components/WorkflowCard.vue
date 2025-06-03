@@ -19,14 +19,14 @@ import { useWorkflowsStore } from '@/stores/workflows.store';
 import TimeAgo from '@/components/TimeAgo.vue';
 import { useProjectsStore } from '@/stores/projects.store';
 import ProjectCardBadge from '@/components/Projects/ProjectCardBadge.vue';
-import { useI18n } from '@/composables/useI18n';
+import { useI18n } from '@n8n/i18n';
 import { useRoute, useRouter } from 'vue-router';
 import { useTelemetry } from '@/composables/useTelemetry';
 import { ResourceType } from '@/utils/projects.utils';
 import type { EventBus } from '@n8n/utils/event-bus';
 import type { WorkflowResource } from './layouts/ResourcesListLayout.vue';
 import type { IUser } from 'n8n-workflow';
-import { ProjectTypes } from '@/types/projects.types';
+import { type ProjectSharingData, ProjectTypes } from '@/types/projects.types';
 import type { PathItem } from '@n8n/design-system/components/N8nBreadcrumbs/Breadcrumbs.vue';
 import { useFoldersStore } from '@/stores/folders.store';
 
@@ -62,7 +62,14 @@ const emit = defineEmits<{
 	'workflow:archived': [];
 	'workflow:unarchived': [];
 	'workflow:active-toggle': [value: { id: string; active: boolean }];
-	'action:move-to-folder': [value: { id: string; name: string; parentFolderId?: string }];
+	'action:move-to-folder': [
+		value: {
+			id: string;
+			name: string;
+			parentFolderId?: string;
+			sharedWithProjects?: ProjectSharingData[];
+		},
+	];
 }>();
 
 const toast = useToast();
@@ -140,17 +147,15 @@ const actions = computed(() => {
 		});
 	}
 
-	if (workflowPermissions.value.update && showFolders.value && !props.readOnly) {
+	if (
+		((workflowPermissions.value.update && !props.readOnly) ||
+			(workflowPermissions.value.move && projectsStore.isTeamProjectFeatureEnabled)) &&
+		showFolders.value &&
+		route.name !== VIEWS.SHARED_WORKFLOWS
+	) {
 		items.push({
 			label: locale.baseText('folders.actions.moveToFolder'),
 			value: WORKFLOW_LIST_ITEM_ACTIONS.MOVE_TO_FOLDER,
-		});
-	}
-
-	if (workflowPermissions.value.move && projectsStore.isTeamProjectFeatureEnabled) {
-		items.push({
-			label: locale.baseText('workflows.item.changeOwner'),
-			value: WORKFLOW_LIST_ITEM_ACTIONS.MOVE,
 		});
 	}
 
@@ -263,6 +268,7 @@ async function onAction(action: string) {
 				id: props.data.id,
 				name: props.data.name,
 				parentFolderId: props.data.parentFolder?.id,
+				sharedWithProjects: props.data.sharedWithProjects,
 			});
 			break;
 	}
@@ -307,24 +313,26 @@ async function deleteWorkflow() {
 }
 
 async function archiveWorkflow() {
-	const archiveConfirmed = await message.confirm(
-		locale.baseText('mainSidebar.confirmMessage.workflowArchive.message', {
-			interpolate: { workflowName: props.data.name },
-		}),
-		locale.baseText('mainSidebar.confirmMessage.workflowArchive.headline'),
-		{
-			type: 'warning',
-			confirmButtonText: locale.baseText(
-				'mainSidebar.confirmMessage.workflowArchive.confirmButtonText',
-			),
-			cancelButtonText: locale.baseText(
-				'mainSidebar.confirmMessage.workflowArchive.cancelButtonText',
-			),
-		},
-	);
+	if (props.data.active) {
+		const archiveConfirmed = await message.confirm(
+			locale.baseText('mainSidebar.confirmMessage.workflowArchive.message', {
+				interpolate: { workflowName: props.data.name },
+			}),
+			locale.baseText('mainSidebar.confirmMessage.workflowArchive.headline'),
+			{
+				type: 'warning',
+				confirmButtonText: locale.baseText(
+					'mainSidebar.confirmMessage.workflowArchive.confirmButtonText',
+				),
+				cancelButtonText: locale.baseText(
+					'mainSidebar.confirmMessage.workflowArchive.cancelButtonText',
+				),
+			},
+		);
 
-	if (archiveConfirmed !== MODAL_CONFIRM) {
-		return;
+		if (archiveConfirmed !== MODAL_CONFIRM) {
+			return;
+		}
 	}
 
 	try {
@@ -401,21 +409,27 @@ const onBreadcrumbItemClick = async (item: PathItem) => {
 </script>
 
 <template>
-	<n8n-card :class="$style.cardLink" data-test-id="workflow-card" @click="onClick">
+	<n8n-card
+		:class="{
+			[$style.cardLink]: true,
+			[$style.cardArchived]: data.isArchived,
+		}"
+		data-test-id="workflow-card"
+		@click="onClick"
+	>
 		<template #header>
-			<n8n-text tag="h2" bold :class="$style.cardHeading" data-test-id="workflow-card-name">
+			<n8n-text
+				tag="h2"
+				bold
+				:class="{
+					[$style.cardHeading]: true,
+					[$style.cardHeadingArchived]: data.isArchived,
+				}"
+				data-test-id="workflow-card-name"
+			>
 				{{ data.name }}
 				<N8nBadge v-if="!workflowPermissions.update" class="ml-3xs" theme="tertiary" bold>
 					{{ locale.baseText('workflows.item.readonly') }}
-				</N8nBadge>
-				<N8nBadge
-					v-if="data.isArchived"
-					class="ml-3xs"
-					theme="tertiary"
-					bold
-					data-test-id="workflow-archived-tag"
-				>
-					{{ locale.baseText('workflows.item.archived') }}
 				</N8nBadge>
 			</n8n-text>
 		</template>
@@ -472,7 +486,19 @@ const onBreadcrumbItemClick = async (item: PathItem) => {
 						</n8n-breadcrumbs>
 					</div>
 				</ProjectCardBadge>
+
+				<n8n-text
+					v-if="data.isArchived"
+					color="text-light"
+					size="small"
+					bold
+					class="ml-s mr-s"
+					data-test-id="workflow-card-archived"
+				>
+					{{ locale.baseText('workflows.item.archived') }}
+				</n8n-text>
 				<WorkflowActivator
+					v-else
 					class="mr-s"
 					:is-archived="data.isArchived"
 					:workflow-active="data.active"
@@ -515,6 +541,10 @@ const onBreadcrumbItemClick = async (item: PathItem) => {
 	}
 }
 
+.cardHeadingArchived {
+	color: var(--color-text-light);
+}
+
 .cardDescription {
 	min-height: 19px;
 	display: flex;
@@ -532,6 +562,10 @@ const onBreadcrumbItemClick = async (item: PathItem) => {
 	cursor: default;
 }
 
+.cardBadge {
+	background-color: var(--color-background-xlight);
+}
+
 .cardBadge.with-breadcrumbs {
 	:global(.n8n-badge) {
 		padding-right: 0;
@@ -539,6 +573,12 @@ const onBreadcrumbItemClick = async (item: PathItem) => {
 	:global(.n8n-breadcrumbs) {
 		padding-left: var(--spacing-5xs);
 	}
+}
+
+.cardArchived {
+	background-color: var(--color-background-light);
+	border-color: var(--color-foreground-light);
+	color: var(--color-text-base);
 }
 
 @include mixins.breakpoint('sm-and-down') {

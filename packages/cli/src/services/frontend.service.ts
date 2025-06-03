@@ -1,12 +1,12 @@
 import type { FrontendSettings, ITelemetrySettings } from '@n8n/api-types';
-import { LicenseState } from '@n8n/backend-common';
+import { LicenseState, Logger } from '@n8n/backend-common';
 import { GlobalConfig, SecurityConfig } from '@n8n/config';
 import { LICENSE_FEATURES } from '@n8n/constants';
 import { Container, Service } from '@n8n/di';
 import { createWriteStream } from 'fs';
 import { mkdir } from 'fs/promises';
 import uniq from 'lodash/uniq';
-import { BinaryDataConfig, InstanceSettings, Logger } from 'n8n-core';
+import { BinaryDataConfig, InstanceSettings } from 'n8n-core';
 import type { ICredentialType, INodeTypeBaseDescription } from 'n8n-workflow';
 import path from 'path';
 
@@ -178,6 +178,7 @@ export class FrontendService {
 			isMultiMain: this.instanceSettings.isMultiMain,
 			pushBackend: this.pushConfig.backend,
 			communityNodesEnabled: this.globalConfig.nodes.communityPackages.enabled,
+			unverifiedCommunityNodesEnabled: this.globalConfig.nodes.communityPackages.unverifiedEnabled,
 			deployment: {
 				type: config.getEnv('deployment.type'),
 			},
@@ -219,9 +220,6 @@ export class FrontendService {
 			variables: {
 				limit: 0,
 			},
-			expressions: {
-				evaluator: config.getEnv('expression.evaluator'),
-			},
 			banners: {
 				dismissed: [],
 			},
@@ -257,6 +255,9 @@ export class FrontendService {
 			},
 			logsView: {
 				enabled: false,
+			},
+			evaluation: {
+				quota: this.licenseState.getMaxWorkflowsWithEvaluations(),
 			},
 		};
 	}
@@ -396,6 +397,9 @@ export class FrontendService {
 		this.settings.folders.enabled = this.license.isFoldersEnabled();
 
 		this.settings.logsView.enabled = config.get('logs_view.enabled');
+
+		// Refresh evaluation settings
+		this.settings.evaluation.quota = this.licenseState.getMaxWorkflowsWithEvaluations();
 
 		return this.settings;
 	}

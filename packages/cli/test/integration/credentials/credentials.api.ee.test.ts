@@ -2,13 +2,13 @@ import type { Project } from '@n8n/db';
 import type { User } from '@n8n/db';
 import type { ListQueryDb } from '@n8n/db';
 import { ProjectRepository } from '@n8n/db';
+import { SharedCredentialsRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import type { ProjectRole } from '@n8n/permissions';
 import { In } from '@n8n/typeorm';
 
 import config from '@/config';
 import { CredentialsService } from '@/credentials/credentials.service';
-import { SharedCredentialsRepository } from '@/databases/repositories/shared-credentials.repository';
 import { ProjectService } from '@/services/project.service.ee';
 import { UserManagementMailer } from '@/user-management/email';
 import { createWorkflow, shareWorkflowWithUsers } from '@test-integration/db/workflows';
@@ -231,7 +231,7 @@ describe('GET /credentials', () => {
 		// ARRANGE
 		//
 		const project1 = await projectService.createTeamProject(member, { name: 'Team Project' });
-		await projectService.addUser(project1.id, anotherMember.id, 'project:editor');
+		await projectService.addUser(project1.id, { userId: anotherMember.id, role: 'project:editor' });
 		// anotherMember should see this one
 		const credential1 = await saveCredential(randomCredentialPayload(), { project: project1 });
 

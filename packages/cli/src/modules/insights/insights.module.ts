@@ -1,6 +1,7 @@
+import { Logger } from '@n8n/backend-common';
 import type { BaseN8nModule } from '@n8n/decorators';
 import { N8nModule, OnLeaderStepdown, OnLeaderTakeover } from '@n8n/decorators';
-import { InstanceSettings, Logger } from 'n8n-core';
+import { InstanceSettings } from 'n8n-core';
 
 import { InsightsService } from './insights.service';
 
@@ -20,17 +21,17 @@ export class InsightsModule implements BaseN8nModule {
 		// We want to initialize the insights background process (schedulers) for the main leader instance
 		// to have only one main instance saving the insights data
 		if (this.instanceSettings.isLeader) {
-			this.insightsService.startBackgroundProcess();
+			this.insightsService.startTimers();
 		}
 	}
 
 	@OnLeaderTakeover()
 	startBackgroundProcess() {
-		this.insightsService.startBackgroundProcess();
+		this.insightsService.startTimers();
 	}
 
 	@OnLeaderStepdown()
 	stopBackgroundProcess() {
-		this.insightsService.stopBackgroundProcess();
+		this.insightsService.stopTimers();
 	}
 }

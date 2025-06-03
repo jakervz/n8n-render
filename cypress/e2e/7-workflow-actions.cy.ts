@@ -200,14 +200,7 @@ describe('Workflow Actions', () => {
 			WorkflowPage.getters.nodeConnections().should('have.length', 2);
 			// Check if all nodes have names
 			WorkflowPage.getters.canvasNodes().each((node) => {
-				cy.ifCanvasVersion(
-					() => {
-						cy.wrap(node).should('have.attr', 'data-name');
-					},
-					() => {
-						cy.wrap(node).should('have.attr', 'data-node-name');
-					},
-				);
+				cy.wrap(node).should('have.attr', 'data-node-name');
 			});
 		});
 	});
@@ -267,7 +260,7 @@ describe('Workflow Actions', () => {
 			.should('have.class', 'is-disabled');
 	});
 
-	it('should archive workflow and then delete it', () => {
+	it('should archive nonactive workflow and then delete it', () => {
 		WorkflowPage.actions.saveWorkflowOnButtonClick();
 		WorkflowPage.getters.archivedTag().should('not.exist');
 
@@ -275,7 +268,6 @@ describe('Workflow Actions', () => {
 		WorkflowPage.getters.workflowMenu().should('be.visible');
 		WorkflowPage.getters.workflowMenu().click();
 		WorkflowPage.getters.workflowMenuItemArchive().click();
-		WorkflowPage.actions.acceptConfirmModal();
 
 		successToast().should('exist');
 		cy.url().should('include', WorkflowPages.url);
@@ -295,8 +287,11 @@ describe('Workflow Actions', () => {
 		cy.url().should('include', WorkflowPages.url);
 	});
 
-	it('should archive workflow and then unarchive it', () => {
+	it('should archive active workflow and then delete it', () => {
+		WorkflowPage.actions.addNodeToCanvas(SCHEDULE_TRIGGER_NODE_NAME);
 		WorkflowPage.actions.saveWorkflowOnButtonClick();
+		WorkflowPage.actions.activateWorkflow();
+		WorkflowPage.getters.isWorkflowActivated();
 		WorkflowPage.getters.archivedTag().should('not.exist');
 
 		// Archive the workflow
@@ -304,6 +299,35 @@ describe('Workflow Actions', () => {
 		WorkflowPage.getters.workflowMenu().click();
 		WorkflowPage.getters.workflowMenuItemArchive().click();
 		WorkflowPage.actions.acceptConfirmModal();
+
+		successToast().should('exist');
+		cy.url().should('include', WorkflowPages.url);
+
+		// Return back to the workflow
+		cy.go('back');
+
+		WorkflowPage.getters.archivedTag().should('be.visible');
+		WorkflowPage.getters.nodeCreatorPlusButton().should('not.exist');
+		WorkflowPage.getters.isWorkflowDeactivated();
+
+		// Delete the workflow
+		WorkflowPage.getters.workflowMenu().should('be.visible');
+		WorkflowPage.getters.workflowMenu().click();
+		WorkflowPage.getters.workflowMenuItemDelete().click();
+		WorkflowPage.actions.acceptConfirmModal();
+		successToast().should('exist');
+		cy.url().should('include', WorkflowPages.url);
+	});
+
+	it('should archive nonactive workflow and then unarchive it', () => {
+		WorkflowPage.actions.saveWorkflowOnButtonClick();
+		WorkflowPage.getters.archivedTag().should('not.exist');
+
+		// Archive the workflow
+		WorkflowPage.getters.workflowMenu().should('be.visible');
+		WorkflowPage.getters.workflowMenu().click();
+		WorkflowPage.getters.workflowMenuItemArchive().click();
+
 		successToast().should('exist');
 		cy.url().should('include', WorkflowPages.url);
 
@@ -438,16 +462,7 @@ describe('Workflow Actions', () => {
 		// Clear the canvas
 		WorkflowPage.actions.hitDeleteAllNodes();
 		WorkflowPage.getters.canvasNodes().should('have.length', 0);
-		// Button should be disabled
-		cy.ifCanvasVersion(
-			() => {
-				WorkflowPage.getters.executeWorkflowButton().should('be.disabled');
-			},
-			() => {
-				// In new canvas, button does not exist when there are no nodes
-				WorkflowPage.getters.executeWorkflowButton().should('not.exist');
-			},
-		);
+		WorkflowPage.getters.executeWorkflowButton().should('not.exist');
 		// Keyboard shortcut should not work
 		WorkflowPage.actions.hitExecuteWorkflow();
 		successToast().should('not.exist');

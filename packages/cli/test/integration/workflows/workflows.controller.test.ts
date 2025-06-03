@@ -1,6 +1,10 @@
 import type { User } from '@n8n/db';
 import type { ListQueryDb } from '@n8n/db';
+import type { WorkflowFolderUnionFull } from '@n8n/db';
 import { ProjectRepository } from '@n8n/db';
+import { WorkflowHistoryRepository } from '@n8n/db';
+import { SharedWorkflowRepository } from '@n8n/db';
+import { WorkflowRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import type { Scope } from '@n8n/permissions';
 import { DateTime } from 'luxon';
@@ -8,10 +12,6 @@ import { PROJECT_ROOT, type INode, type IPinData, type IWorkflowBase } from 'n8n
 import { v4 as uuid } from 'uuid';
 
 import { ActiveWorkflowManager } from '@/active-workflow-manager';
-import { SharedWorkflowRepository } from '@/databases/repositories/shared-workflow.repository';
-import { WorkflowHistoryRepository } from '@/databases/repositories/workflow-history.repository';
-import type { WorkflowFolderUnionFull } from '@/databases/repositories/workflow.repository';
-import { WorkflowRepository } from '@/databases/repositories/workflow.repository';
 import { License } from '@/license';
 import { ProjectService } from '@/services/project.service.ee';
 import { EnterpriseWorkflowService } from '@/workflows/workflow.service.ee';
@@ -54,7 +54,6 @@ const { objectContaining, arrayContaining, any } = expect;
 const activeWorkflowManagerLike = mockInstance(ActiveWorkflowManager);
 
 let projectRepository: ProjectRepository;
-let projectService: ProjectService;
 
 beforeEach(async () => {
 	await testDb.truncate([
@@ -68,7 +67,6 @@ beforeEach(async () => {
 		'User',
 	]);
 	projectRepository = Container.get(ProjectRepository);
-	projectService = Container.get(ProjectService);
 	owner = await createOwner();
 	authOwnerAgent = testServer.authAgentFor(owner);
 	member = await createMember();
@@ -288,7 +286,10 @@ describe('POST /workflows', () => {
 				type: 'team',
 			}),
 		);
-		await projectService.addUser(project.id, owner.id, 'project:admin');
+		await Container.get(ProjectService).addUser(project.id, {
+			userId: owner.id,
+			role: 'project:admin',
+		});
 
 		//
 		// ACT
@@ -362,7 +363,10 @@ describe('POST /workflows', () => {
 				type: 'team',
 			}),
 		);
-		await projectService.addUser(project.id, member.id, 'project:viewer');
+		await Container.get(ProjectService).addUser(project.id, {
+			userId: member.id,
+			role: 'project:viewer',
+		});
 
 		//
 		// ACT

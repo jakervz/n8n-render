@@ -3,7 +3,7 @@ import {
 	type InsightsDateRange,
 	INSIGHTS_DATE_RANGE_KEYS,
 } from '@n8n/api-types';
-import { LicenseState } from '@n8n/backend-common';
+import { LicenseState, Logger } from '@n8n/backend-common';
 import { OnShutdown } from '@n8n/decorators';
 import { Service } from '@n8n/di';
 import { UserError } from 'n8n-workflow';
@@ -13,6 +13,7 @@ import { NumberToType } from './database/entities/insights-shared';
 import { InsightsByPeriodRepository } from './database/repositories/insights-by-period.repository';
 import { InsightsCollectionService } from './insights-collection.service';
 import { InsightsCompactionService } from './insights-compaction.service';
+import { InsightsPruningService } from './insights-pruning.service';
 
 const keyRangeToDays: Record<InsightsDateRange['key'], number> = {
 	day: 1,
@@ -30,23 +31,33 @@ export class InsightsService {
 		private readonly insightsByPeriodRepository: InsightsByPeriodRepository,
 		private readonly compactionService: InsightsCompactionService,
 		private readonly collectionService: InsightsCollectionService,
+		private readonly pruningService: InsightsPruningService,
 		private readonly licenseState: LicenseState,
-	) {}
-
-	startBackgroundProcess() {
-		this.compactionService.startCompactionTimer();
-		this.collectionService.startFlushingTimer();
+		private readonly logger: Logger,
+	) {
+		this.logger = this.logger.scoped('insights');
 	}
 
-	stopBackgroundProcess() {
+	startTimers() {
+		this.compactionService.startCompactionTimer();
+		this.collectionService.startFlushingTimer();
+		if (this.pruningService.isPruningEnabled) {
+			this.pruningService.startPruningTimer();
+		}
+		this.logger.debug('Started compaction, flushing and pruning schedulers');
+	}
+
+	stopTimers() {
 		this.compactionService.stopCompactionTimer();
 		this.collectionService.stopFlushingTimer();
+		this.pruningService.stopPruningTimer();
+		this.logger.debug('Stopped compaction, flushing and pruning schedulers');
 	}
 
 	@OnShutdown()
 	async shutdown() {
 		await this.collectionService.shutdown();
-		this.compactionService.stopCompactionTimer();
+		this.stopTimers();
 	}
 
 	async getInsightsSummary({
